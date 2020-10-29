@@ -1,0 +1,751 @@
+---
+title: "Stream gages for evaluating impacts of urban greeness"
+author: "tn"
+date: "8/24/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(knitr)
+library(sf)
+library(leaflet)
+library(ggplot2)
+library(readxl)
+library(foreign)
+library(dataRetrieval)
+library(waterData)
+library(lfstat)
+library(plotly)
+```
+
+
+## Load gage data
+
+```{r}
+#gage data from gagesII dataset (basin info, landcover, flow record info, and other, from 2009)
+
+basinid <- read_excel("X:\\Urban_greeness_research\\Data\\Hydro\\Gagedata\\gagesII_additionaldata\\gagesII_sept30_2011_conterm.xlsx", sheet= "BasinID", col_names=TRUE)
+
+flowrec <- read_excel("X:\\Urban_greeness_research\\Data\\Hydro\\Gagedata\\gagesII_additionaldata\\gagesII_sept30_2011_conterm.xlsx", sheet= "FlowRec", col_names=TRUE) %>%
+  select(1:6)
+
+lc_basin <- read_excel("X:\\Urban_greeness_research\\Data\\Hydro\\Gagedata\\gagesII_additionaldata\\gagesII_sept30_2011_conterm.xlsx", sheet= "LC06_Basin", col_names=TRUE) %>%
+  select(1:4)
+
+climate<-read_excel("X:\\Urban_greeness_research\\Data\\Hydro\\Gagedata\\gagesII_additionaldata\\gagesII_sept30_2011_conterm.xlsx", sheet= "Climate", col_names=TRUE) %>%
+  select(1,2)
+  
+infra<-read_excel("X:\\Urban_greeness_research\\Data\\Hydro\\Gagedata\\gagesII_additionaldata\\gagesII_sept30_2011_conterm.xlsx", sheet= "Pop_Infrastr", col_names=TRUE) %>%
+  select(1,7)
+
+topo<-read_excel("X:\\Urban_greeness_research\\Data\\Hydro\\Gagedata\\gagesII_additionaldata\\gagesII_sept30_2011_conterm.xlsx", sheet= "Topo", col_names=TRUE) %>%
+  select(1,10)
+
+gage<-left_join(basinid, lc_basin,  by='STAID') %>%
+  left_join(., flowrec, by='STAID') %>%
+  left_join(., climate, by='STAID') %>%
+  left_join(., infra, by='STAID') %>%
+  left_join(., topo, by='STAID')
+```
+
+```{r}
+#gage data from NHD gage.info dataset (includes active gages in 2015)
+
+gageinfo <- read.dbf("X:\\Staff Files\\Data\\GISDATA\\Tyler_GISDATA\\NHD\\NHDPlusNationalData\\GageInfo.dbf") %>%
+  select(1,6,7, 10)
+
+#join to gage
+gage<- left_join(gage, gageinfo, by=c('STAID'='GAGEID'))
+
+
+```
+
+```{r}
+#join updated landcover attributes
+
+LC<- read.table("G:\\.shortcut-targets-by-id\\1mXpuIifC_L0FfJk0j2Vz-Hw8yJ2IqiSj\\Urban Greeness Tracking Research\\Analysis\\BasinSummary.txt", sep=',', header =TRUE,  colClasses=c("SITE_NO"="character"))
+
+LC2<- read.table("G:\\.shortcut-targets-by-id\\1mXpuIifC_L0FfJk0j2Vz-Hw8yJ2IqiSj\\Urban Greeness Tracking Research\\Analysis\\BasinSummary.txt", sep=",")
+
+
+#%>% mutate(STAID=as.character(SITE_NO))
+#gage<-gage%>% mutate(SITE_NO=as.numeric(STAID))
+
+gage<-left_join(gage, LC, by= c('STAID'='SITE_NO'))
+
+#test<-left_join(LC, gage, by= c('SITE_NO'='STAID'))
+#count(test, STANAME=='NA')
+
+```
+
+#compare landcover
+```{r}
+ggplot(gage, aes(IMPNLCD06, NLCD2016_I)) +
+    geom_point(colour="black", fill="white")
+
+ggplot(gage, aes(NLCD2001_I, NLCD2016_I)) +
+    geom_point(colour="black", fill="white")
+```
+
+
+
+# basin filtering
+```{r}
+##filter criteria counts
+#active in 2015
+count(gage, Active==1) #6,624
+
+#old selection criteria with old data set
+count(gage, Active==1 & DASqMi < 20 & DEVNLCD06 > 25) #336 (less data using gagesII dataset 332vs516 )
+
+#active in 2015 and at least 10 years data since 1990
+count(gage, Active==1 & FLOWYRS_1990_2009>10) #4,822
+
+##active in 2015 area < 25 sqmi
+count(gage, Active==1 & DASqMi < 25) #985
+
+##active in 2015 and at least 10 years data since 1990 & area < 25 sqmi
+count(gage, Active==1 & FLOWYRS_1990_2009>10 & DASqMi < 25) #550
+
+##active in 2015 and data to 1990 & area < 25 sqmi & %DEVELOPED > 25
+count(gage, Active==1 & FLOWYRS_1990_2009>10 & DASqMi < 25 & DEVNLCD06 > 25) # 200
+
+##active in 2015 and data to 1990 & area < 25 sqmi & %IMPERVIOUS > 25
+count(gage, Active==1 & FLOWYRS_1990_2009>10 & DASqMi > 0 & IMPNLCD06 > 5) # 607
+count(gage, Active==1 & FLOWYRS_1990_2009>10 & DASqMi > 0 & NLCD2016_I > 5) # 819
+
+
+query<-filter(gage, Active==1 & FLOWYRS_1990_2009>10 & DASqMi > 0 & IMPNLCD06 > 5) # 169
+
+count(gage, NLCD2016_I == 5)
+
+##filter dataset
+gage_filter <- filter(gage, Active==1 & FLOWYRS_1990_2009>10 & DASqMi > 0 & NLCD2016_I > 5)
+```
+
+# manually add in 2nd nature cities
+```{r eval=FALSE, include=FALSE}
+add_countieslist<-c('Prince Georges', 'Philadelphia', 'Milwaukee', 'Maricopa', 'Los Angeles', 'Monterey', 'Dist Of Columbia', 'District of Columbia')
+  
+add_counties<-filter(gage, COUNTYNAME_SITE %in% add_countieslist)
+
+add_counties <- filter(add_counties, Active==1 & FLOWYRS_1990_2009>10 & DASqMi < 200 & IMPNLCD06 > 5)
+
+#join to others
+gage_filter <- bind_rows (gage_filter, add_counties)
+gage_filter <- unique(gage_filter)
+```
+
+#download recent gage data
+```{r}
+
+gagelist<- gage_filter$STAID
+
+head(gagelist)
+
+parameterCd <- "00060"  # Discharge
+startDate <- "2010-01-01"  
+endDate <- "2019-12-31"
+
+#these take forever
+#test_discharge <- readNWISuv(gagelist[1], parameterCd,  startDate, endDate)
+
+#dailys avg are faster but not what we want. but can use to exclude gages without enough history
+#test_daily<- readNWISdv(gagelist[1], parameterCd,  startDate, endDate)
+
+#downloading dailies for all gaes under 20 sqr miles.
+all_daily_2010 <- lapply(gagelist, readNWISdv, parameterCd, startDate, endDate)
+
+```
+
+#calculate number of recent years on record
+```{r}
+#calculate # of years of record since 1980
+
+#make year collumn
+all_daily_2010_yr<- lapply(all_daily_2010, function(x) mutate(x, year = substr(x$Date, 1,4)))
+
+all_daily_2010_yr<- lapply(all_daily_2010_yr, function(x) mutate(x, STAID = as.factor(x$site_no)))
+
+
+#get number of records per year - summarise by year and count
+all_yr_count <- lapply(all_daily_2010_yr, function(x) count(x, STAID, year))
+
+#if > 364 = complete year
+all_yr_count <- lapply(all_yr_count, function(x) mutate(x, complete =ifelse(x$n>360, 1, 0)))
+
+#merge tables
+all_yr_countbind <- dplyr::bind_rows(all_yr_count)
+
+#summerise number of complete years per gage since 2010
+all_10yr_count <- all_yr_countbind %>% group_by(STAID) %>% summarise(FLOWYRS_2010_2019 = sum(complete))
+
+#join to gage short list
+gage_filter<- left_join(gage_filter, all_10yr_count, by='STAID')
+
+```
+
+#filter again to gages with > 7yrs recent data
+```{r}
+
+gage_filter<- filter(gage_filter, FLOWYRS_2010_2019>7)
+
+
+#export to CSV
+#first make another collumn to preserve actual gageID
+gage_filter <- gage_filter %>% mutate(STAID_STRG=paste("`",STAID))
+
+write.csv(gage_filter, "C:\\Users\\tnodi\\Desktop\\data\\TNC_project\\study_gages_sept11.csv")
+
+#exporting as csv converts STAID to numberic which alters the value. need a work around to join to basins.
+```
+
+#rank number of gages by county
+```{r}
+
+county_rank <- gage_filter %>% count(COUNTYNAME_SITE, STATE) %>%
+  rename('n_gages'='n')%>%
+  arrange(desc(n_gages))
+
+county_rank
+
+state_rank <- gage_filter %>% count(STATE) %>%
+  rename('n_gages'='n')%>%
+  arrange(desc(n_gages))
+
+state_rank
+
+#export as csv for GSI data inquires
+write.csv(county_rank, "X:\\Urban_greeness_research\\Data\\Hydro\\Gagedata\\county_gages_studyfilter.csv")
+
+write.csv(state_rank, "X:\\Urban_greeness_research\\Data\\Hydro\\Gagedata\\Study_gages_City_rank.csv")
+```
+
+
+Map the gage locations
+```{r}
+#make interactive map to show gage locations in cities
+
+m <- leaflet(data = gage_filter) %>% 
+  addTiles() %>%  # Add default OpenStreetMap map tiles
+  addCircleMarkers(~LNG_GAGE,~LAT_GAGE, radius = 2, popup =paste("Name:", gage_filter$STANAME, "<br>",
+                           "Drainage area:", gage_filter$DASqMi, "sqmi", "<br>",
+                           "% Impervious:", gage_filter$IMPNLCD06))
+
+
+
+m  # Print the map
+
+
+```
+
+```{r}
+#make some distribution plots based on filter criteria
+ggplot(gage_filter, aes(x=DASqMi)) +
+    geom_histogram(binwidth=2, colour="black", fill="white")+
+  xlab("Drainage area (sqmi)")+
+    scale_y_continuous(breaks=c(2,4,6,8,10))
+
+ggplot(gage_filter, aes(x=NLCD2016_I)) +
+    geom_histogram(binwidth=1, colour="black", fill="white")+
+    xlab("% Impervious")+
+    scale_y_continuous(breaks=c(2,4,6,8,10))
+
+```
+
+```{r}
+#make some distribution plots based on characteristics
+ggplot(gage_filter, aes(x=PPTAVG_BASIN)) +
+    geom_histogram(binwidth=2, colour="black", fill="white")+
+  xlab("Avg annual rainfall (cm)")+
+  scale_y_continuous(breaks=c(2,4,6,8,10))
+
+ggplot(gage_filter, aes(x=SLOPE_PCT)) +
+    geom_histogram(binwidth=0.25, colour="black", fill="white")+
+    xlab("Avg slope (%)")+
+    scale_y_continuous(breaks=c(2,4,6,8,10))
+
+
+```
+
+
+
+#now download all the hydro data
+
+```{r eval=FALSE, include=FALSE}
+
+parameterCd <- "00060"  # Discharge
+startDate <- "1980-01-01"  
+endDate <- "2019-12-31"
+
+
+
+#downloading dailies for all to 1980.
+all_daily_1980 <- lapply(gagelist, readNWISdv, parameterCd, startDate, endDate)
+```
+
+```{r eval=FALSE, include=FALSE}
+
+#make year collumn
+all_daily_1980_yr<- lapply(all_daily_1980, function(x) mutate(x, year = substr(x$Date, 1,4)))
+all_daily_1980_yr<- lapply(all_daily_1980_yr, function(x) mutate(x, STAID = as.factor(x$site_no)))
+
+
+#combine all gages 
+all_gage_bind <- dplyr::bind_rows(all_daily_1980_yr)
+
+#calc discharge per day and assign water year
+all_gage_bind <- all_gage_bind %>% mutate(cf_day = X_00060_00003*86400,
+                                          STAID = as.factor(site_no),
+                                          wat_yr = water_year(Date, origin=10))
+
+
+
+#sum runoff per year
+all_gage_annual_runoff <- all_gage_bind %>% group_by(STAID, wat_yr) %>% summarise(cf_yr = sum(cf_day))
+length(unique(all_gage_annual_runoff$STAID))
+
+
+# calc complete years
+all_yr_count2 <- all_gage_bind %>% count(site_no, wat_yr)
+#if > 360 = complete year
+all_yr_count2 <- all_yr_count2 %>% mutate(complete =ifelse(n>360, 1, 0),
+                                          STAID = as.factor(site_no))
+
+
+
+
+#join to annual runoff data. remove years without full record
+all_gage_annual_runoff<- left_join(all_gage_annual_runoff, all_yr_count2, by = c("STAID" = "STAID", "wat_yr" = "wat_yr"))
+
+all_gage_annual_runoff_complete<-filter(all_gage_annual_runoff, complete == 1 )
+
+write.csv(all_gage_annual_runoff, "G:\\.shortcut-targets-by-id\\1mXpuIifC_L0FfJk0j2Vz-Hw8yJ2IqiSj\\Urban Greeness Tracking Research\\Analysis\\Annual_runoff_watyr.csv")
+
+write.csv(all_gage_bind, "G:\\.shortcut-targets-by-id\\1mXpuIifC_L0FfJk0j2Vz-Hw8yJ2IqiSj\\Urban Greeness Tracking Research\\Analysis\\daily_runoff.csv")
+
+```
+
+#join flow data to other data
+```{r eval=FALSE, include=FALSE}
+#sumarise_annual_runoff
+mean_annual_runoff<-all_gage_annual_runoff %>% group_by(STAID) %>% summarise(mean_annual_runoff=mean(cf_yr)) 
+
+gage_filter<-left_join(gage_filter, mean_annual_runoff, by="STAID")
+
+gage_filter<-gage_filter %>% mutate(MAR_stand= mean_annual_runoff/DASqMi)
+
+write.csv(gage_filter, "G:\\.shortcut-targets-by-id\\1mXpuIifC_L0FfJk0j2Vz-Hw8yJ2IqiSj\\Urban Greeness Tracking Research\\Data\\Hydro_data\\study_catchments_oct6.csv")
+
+write.table(gage_filter, "G:\\.shortcut-targets-by-id\\1mXpuIifC_L0FfJk0j2Vz-Hw8yJ2IqiSj\\Urban Greeness Tracking Research\\Data\\Hydro_data\\study_catchments_oct6.txt")
+
+```
+
+```{r}
+#list of study gages and cathcment characterisitcs
+gage_filter_ld<- read.csv("G:\\Shared drives\\2NDNATURE\\Science\\Research Projects\\TNC Urban Greeness Tracking\\Data\\Hydro_data\\study_catchments_oct6.csv", colClasses = c("STAID"="character"))
+
+#annual discharge volume for all gages (calculated in 'urban greenness_gagesII_selection.Rmd')
+all_gage_annual_runoff_ld<- read.csv( "G:\\Shared drives\\2NDNATURE\\Science\\Research Projects\\TNC Urban Greeness Tracking\\Analysis\\Annual_runoff_watyr.csv", colClasses=c("STAID"="character"))
+
+#daily mean discharge for all gages
+all_gage_bind_ld <- read.csv( "G:\\Shared drives\\2NDNATURE\\Science\\Research Projects\\TNC Urban Greeness Tracking\\Analysis\\daily_runoff.csv", colClasses=c("STAID"="character", "site_no"="character")) %>%mutate(Date=as.Date(Date))
+
+#daily max data for where we have it
+all_gage_max_bind_ld<-read.csv("G:\\Shared drives\\2NDNATURE\\Science\\Research Projects\\TNC Urban Greeness Tracking\\Analysis\\daily_max_runoff.csv", colClasses=("site_no"="character")) %>%mutate(Date=as.Date(Date))
+
+
+#all_gage_bind_ld<-all_gage_bind_ld%>%mutate(Date=as.Date(Date))
+```
+
+
+#plots
+```{r}
+
+ggplot(gage_filter_ld, aes(x=MAR_stand)) +
+    geom_histogram(colour="black", fill="white")+
+    xlab("MAR")
+
+ggplot(gage_filter_ld, aes(NLCD2016_I, MAR_stand)) +
+    geom_point(colour="black", fill="white")
+
+ggplot(gage_filter_ld, aes(Prism30n_p, MAR_stand)) +
+    geom_point(colour="black", fill="white")+
+  xlab("mean annual precip (mm)")+
+  ylab("mean annual runoff (cubic ft / by drainage area)")
+
+```
+
+
+#download daily maxima!
+```{r}
+
+gagelist<- gage_filter_ld$STAID
+
+
+parameterCd <- "00060"  # Discharge
+startDate <- "1980-10-01"  
+endDate <- "2019-09-30"
+statCd <- "00001"
+
+head(gagelist)
+
+
+#downloading max dailies for all to 1980.
+peak_test <- readNWISpeak(gagelist[1], "2018-09-30", endDate)
+
+
+all_dailymax_1980 <- lapply(gagelist, readNWISdv, parameterCd, startDate, endDate, statCd)
+
+```
+
+```{r}
+#combine all gages 
+all_dailymax_bind <- dplyr::bind_rows(all_dailymax_1980)
+length(unique(all_dailymax_bind$site_no))
+
+
+#join daily max to daily 
+
+all_gage_meanmax<- left_join(all_gage_bind_ld, all_dailymax_bind, by = c("Date" = "Date", "site_no" = "site_no" ))
+
+write.csv(all_dailymax_bind, "G:\\Shared drives\\2NDNATURE\\Science\\Research Projects\\TNC Urban Greeness Tracking\\Analysis\\daily_max_runoff.csv")
+```
+
+
+```{r}
+#calc monthly medians from the mean daily
+all_gage_meanmax<-renameNWISColumns(all_gage_meanmax)
+head(all_gage_meanmax)
+
+all_gage_meanmax<- all_gage_meanmax %>% mutate(month = substr(Date, 6,7),
+                                               day=substr(Date, 9,10))
+
+mnth_med_allyrs <- all_gage_meanmax %>% group_by(site_no, month) %>% summarise(mnth_med_allyrs= median(Flow))
+
+mnth_med_curyr <- all_gage_meanmax %>% group_by(site_no, month, year) %>% summarise(mnth_med_curyr= median(Flow))
+
+all_gage_meanmax <- all_gage_meanmax %>% left_join(mnth_med_allyrs, by = c("month" = "month", "site_no" = "site_no" )) %>% left_join (mnth_med_curyr, by = c("month" = "month", "site_no" = "site_no", "year" = "year"))
+
+#head(all_gage_meanmax)
+
+```
+
+```{r}
+#calculate peaks
+all_gage_meanmax <- all_gage_meanmax %>% 
+  mutate(Peak =ifelse(Flow_Max>(3*mnth_med_allyrs), 1, 0),
+        meanPeak =ifelse(Flow>(3*mnth_med_allyrs), 1, 0),
+        Peak_local=ifelse(Flow_Max>(3*mnth_med_curyr), 1, 0),
+        meanPeak_local =ifelse(Flow>(3*mnth_med_curyr), 1, 0))
+
+#peak stats for all years
+all_gage_annual_max <- all_gage_meanmax %>% filter(Peak==1) %>% group_by(STAID, wat_yr) %>% summarise(pk_per_yr = sum(Peak), pk_yr_avg=mean(Flow_Max), pk_yr_med=median(Flow_Max), cv=(sd(Flow_Max, na.rm=TRUE)/
+   mean(Flow_Max, na.rm=TRUE)*100))
+
+length(unique(all_gage_annual_max$STAID))
+
+# calc complete years
+Flow_Max_yr_count <- all_gage_meanmax %>% filter(Flow_Max>=0) %>% count(site_no, wat_yr)
+#if > 360 = complete year
+Flow_Max_yr_count <- Flow_Max_yr_count %>% mutate(complete =ifelse(n>360, 1, 0),
+                                          STAID = as.factor(site_no))
+
+#join to annual runoff data. remove years without full record
+all_gage_annual_max<- left_join(all_gage_annual_max, Flow_Max_yr_count, by = c("STAID" = "STAID", "wat_yr" = "wat_yr"))
+
+all_gage_peak_complete<-filter(all_gage_annual_max, complete == 1 )
+```
+
+
+#join flow data to other data
+```{r}
+#sumarise_peak_runoff
+catchment_peak_runoff<-all_gage_peak_complete %>% group_by(STAID) %>% summarise(pk_per_yr = mean(pk_per_yr), pk_yr_avg=mean(pk_yr_avg), pk_yr_med=mean(pk_yr_med), cv=mean(cv)) 
+
+gage_filter_peak<-left_join(gage_filter_ld, catchment_peak_runoff, by="STAID")
+
+#gage_filter<-gage_filter %>% mutate(MAR_stand= mean_annual_runoff/DASqMi)
+
+```
+
+#plots
+```{r}
+ggplot(gage_filter_peak, aes(x=pk_per_yr)) +
+    geom_histogram(colour="black", fill="white")+
+    xlab("MAR")
+
+ggplot(gage_filter_peak, aes(NLCD2016_I, pk_per_yr)) +
+    geom_point(colour="black", fill="white")
+
+ggplot(gage_filter_peak, aes(Prism30n_p, pk_per_yr)) +
+    geom_point(colour="black", fill="white")
+
+ggplot(gage_filter_peak, aes(NLCD2016_I, cv)) +
+    geom_point(colour="black", fill="white")
+
+```
+
+```{r}
+#try getting max for select missing gages
+gagetest_null<-"01092000"
+gagetest2<-c("08072300","01092000", "08072730")
+
+parameterCd <- "00060"  # Discharge
+startDate <- "2000-10-01"  
+endDate <- "2019-09-30"
+statCd <- c("00003","00001", "00002", "00008"	)
+
+maxtest_null<- readNWISdv(gagetest_null,parameterCd, startDate, endDate, statCd)
+maxtest_value <- readNWISdv(gagetest2,parameterCd, startDate, endDate, statCd)
+
+peak_test <- readNWISpeak(gagetest_null, "2018-09-29", "2019-09-30")
+
+maxtest_null<-importDVs("01092000", code = "00060", "00001", sdate = startDate,
+edate = endDate)
+
+#data availbility
+siteNumber = "08072300"
+availableData <- whatNWISdata(siteNumber = gagelist, service = c("dv","uv"), parameterCd = "00060")
+```
+
+
+```{r}
+availableData %>% filter(data_type_cd=="dv", parm_cd=="00060", stat_cd=="00001") %>%
+ ggplot(aes(x=begin_date)) +
+    geom_histogram(colour="black", fill="white")
+
+availableData %>% count(data_type_cd=="dv" & parm_cd=="00060" & stat_cd=="00001")
+
+availableData %>% filter(data_type_cd=="uv", parm_cd=="00060") %>%
+ ggplot(aes(x=begin_date)) +
+    geom_histogram(colour="black", fill="white")
+
+availableData %>% count(data_type_cd=="uv"& parm_cd=="00060")
+
+availableData %>% filter(data_type_cd=="dv", parm_cd=="00060", stat_cd=="00003") %>%
+ ggplot(aes(x=begin_date)) +
+    geom_histogram(colour="black", fill="white")
+
+availableData %>% count(data_type_cd=="dv"& parm_cd=="00060"& stat_cd=="00003")
+
+```
+
+
+```{r}
+#downloading intantaneous data for all to 1980.
+uv_2000 <- lapply(gagelist, readNWISuv, parameterCd, startDate, endDate)
+
+```
+
+###sub analysis looking at effect of using daily max or daily mean
+
+```{r}
+metric_comp<-all_gage_meanmax %>% mutate(meanmax_dif= Flow_Max - Flow) %>% filter(Flow_Max>0)
+
+
+metric_comp_sum <- metric_comp  %>%  mutate(peak_flow_max=ifelse(Peak==1, Flow_Max, 0),
+                                            peak_flow_mean=ifelse(meanPeak==1, Flow, 0),
+                                            peak_flow_max_loc=ifelse(Peak_local==1, Flow_Max, 0),
+                                            peak_flow_mean_loc=ifelse(meanPeak_local==1, Flow, 0)) %>%
+ group_by(site_no, wat_yr) %>% 
+   summarise(diff=mean(meanmax_dif),
+             pk_per_yr=sum(Peak),
+             pk_per_yr2=sum(meanPeak),
+             pk_yr_avg= mean(peak_flow_max),
+             pk_yr_avg2= mean(peak_flow_mean),
+             pk_per_yr_loc=sum(Peak_local),
+             pk_per_yr2_loc=sum(meanPeak_local),
+             pk_yr_avg_loc= mean(peak_flow_max_loc),
+             pk_yr_avg2_loc= mean(peak_flow_mean_loc))
+```
+
+#Plots comparing peak metrics using max and mean using global paek threshold
+```{r}
+#plot compare diff metrics across all sites and years
+
+ggplot(metric_comp_sum, aes(pk_per_yr, pk_per_yr2)) +
+    geom_point(colour="black", fill="white")
+
+ggplot(metric_comp_sum, aes(pk_yr_avg, pk_yr_avg2)) +
+    geom_point(colour="black", fill="white")+
+  xlim(0,5000)+
+  ylim(0,5000)
+
+
+#look for single site at differences in peak values
+
+#site 02087275
+
+metric_comp_sum %>% filter(site_no =='02087275') %>% pivot_longer(cols =c(pk_per_yr, pk_per_yr2), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()
+
+
+metric_comp_sum %>% filter(site_no =='02087275') %>% pivot_longer(cols =c(pk_yr_avg, pk_yr_avg2), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()
+
+#site 02087275
+
+metric_comp_sum %>% filter(site_no =='02168504') %>% pivot_longer(cols =c(pk_per_yr, pk_per_yr2), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()
+
+
+metric_comp_sum %>% filter(site_no =='02168504') %>% pivot_longer(cols =c(pk_yr_avg, pk_yr_avg2), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()
+```
+
+#Plots comparing peak metrics using max and mean using local peak threshold
+```{r}
+#plot compare diff metrics across all sites and years
+
+ggplot(metric_comp_sum, aes(pk_per_yr_loc, pk_per_yr2_loc)) +
+    geom_point(colour="black", fill="white")+
+  xlab("peaks per year (using daily max")+
+  ylab("peaks per year (using daily mean")+
+  xlim(0,150)+
+  ylim(0,150)+
+  coord_fixed()
+
+ggplot(metric_comp_sum, aes(pk_yr_avg_loc, pk_yr_avg2_loc)) +
+    geom_point(colour="black", fill="white")+
+  xlab("annual avg peak flow (using daily max)")+
+  ylab("annual avg peak flow (using daily mean)")+
+  xlim(0,3000)+
+  ylim(0,3000)+
+  coord_fixed()
+
+
+#look for single site at differences in peak values
+
+#site 02087275
+
+metric_comp_sum %>% filter(site_no =='02087275') %>% pivot_longer(cols =c(pk_per_yr_loc, pk_per_yr2_loc), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()+
+  ggtitle("peaks per year for gage 02087275")+
+  xlab("year")+
+  ylab("peaks per year")+
+  theme(axis.text.x = element_text(angle = 45))+
+  scale_color_manual(labels = c("using daily max", "using daily mean"), values = c("red", "blue"))
+
+
+metric_comp_sum %>% filter(site_no =='02087275') %>% pivot_longer(cols =c(pk_yr_avg_loc, pk_yr_avg2_loc), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()+
+    ggtitle("annual avg peak flow for gage 02087275")+
+  xlab("year")+
+  ylab("annual avg peak flow (cfs)")+
+  theme(axis.text.x = element_text(angle = 45))+
+  scale_color_manual(labels = c("using daily max", "using daily mean"), values = c("red", "blue"))
+
+#site 02168504
+
+metric_comp_sum %>% filter(site_no =='02168504') %>% pivot_longer(cols =c(pk_per_yr_loc, pk_per_yr2_loc), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()+
+    ggtitle("peaks per year for gage 02168504")+
+  xlab("year")+
+  ylab("peaks per year")+
+  theme(axis.text.x = element_text(angle = 45))+
+  scale_color_manual(labels = c("using daily max", "using daily mean"), values = c("red", "blue"))
+
+
+metric_comp_sum %>% filter(site_no =='02168504') %>% pivot_longer(cols =c(pk_yr_avg_loc, pk_yr_avg2_loc), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()+
+      ggtitle("annual avg peak flow for gage 02168504")+
+  xlab("year")+
+  ylab("annual avg peak flow (cfs)")+
+  theme(axis.text.x = element_text(angle = 45))+
+  scale_color_manual(labels = c("using daily max", "using daily mean"), values = c("red", "blue"))
+
+```
+
+
+#Plots comparing peak metrics using global and local peak threshold for max
+```{r}
+#plot compare diff metrics across all sites and years
+
+ggplot(metric_comp_sum, aes(pk_per_yr, pk_per_yr_loc)) +
+    geom_point(colour="black", fill="white")+
+  xlab("peaks per year (using global threshold")+
+  ylab("peaks per year (using local threshold")+
+  xlim(0,300)+
+  ylim(0,300)+
+  coord_fixed()
+
+ggplot(metric_comp_sum, aes(pk_yr_avg, pk_yr_avg_loc)) +
+    geom_point(colour="black", fill="white")+
+  xlab("annual avg peak flow (using global threshold)")+
+  ylab("annual avg peak flow (using local threshold)")+
+  xlim(0,5000)+
+  ylim(0,5000)+
+  coord_fixed()
+
+
+#look for single site at differences in peak values
+
+#site 02087275
+
+metric_comp_sum %>% filter(site_no =='02087275') %>% pivot_longer(cols =c(pk_per_yr, pk_per_yr_loc), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()+
+  ggtitle("peaks per year for gage 02087275")+
+  xlab("year")+
+  ylab("peaks per year")+
+  theme(axis.text.x = element_text(angle = 45))+
+  scale_color_manual(labels = c("using global threshold", "using local threshold"), values = c("red", "blue"))
+
+
+metric_comp_sum %>% filter(site_no =='02087275') %>% pivot_longer(cols =c(pk_yr_avg, pk_yr_avg_loc), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()+
+    ggtitle("annual avg peak flow for gage 02087275")+
+  xlab("year")+
+  ylab("annual avg peak flow (cfs)")+
+  theme(axis.text.x = element_text(angle = 45))+
+  scale_color_manual(labels = c("using global threshold", "using local threshold"), values = c("red", "blue"))
+
+#site 02087275
+
+metric_comp_sum %>% filter(site_no =='02168504') %>% pivot_longer(cols =c(pk_per_yr, pk_per_yr_loc), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()+
+    ggtitle("peaks per year for gage 02168504")+
+  xlab("year")+
+  ylab("peaks per year")+
+  theme(axis.text.x = element_text(angle = 45))+
+  scale_color_manual(labels = c("using global threshold", "using local threshold"), values = c("red", "blue"))
+
+
+metric_comp_sum %>% filter(site_no =='02168504') %>% pivot_longer(cols =c(pk_yr_avg, pk_yr_avg_loc), names_to='method')%>%
+  ggplot(aes(wat_yr, value, group=method, colour=method)) +
+    geom_line() +
+    geom_point()+
+      ggtitle("annual avg peak flow for gage 02168504")+
+  xlab("year")+
+  ylab("annual avg peak flow (cfs)")+
+  theme(axis.text.x = element_text(angle = 45))+
+  scale_color_manual(labels = c("using global threshold", "using local threshold"), values = c("red", "blue"))
+```
+

@@ -1,0 +1,238 @@
+---
+title: "Hydrologic_metrics"
+author: "tn"
+date: "10/27/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(knitr)
+library(sf)
+library(leaflet)
+library(ggplot2)
+library(readxl)
+library(foreign)
+library(dataRetrieval)
+library(waterData)
+library(lfstat)
+library(plotly)
+library(FlowScreen)
+library(hydrostats)
+library(lfstat)
+library(scales)
+library(zoo)
+
+```
+
+#Load in data
+See urban greenness_gagesII_selection.Rmd for study gage filtering and downloading of daily hydro data
+
+```{r}
+#list of study gages and cathcment characterisitcs
+gage_filter_ld<- read.csv("G:\\Shared drives\\2NDNATURE\\Science\\Research Projects\\TNC Urban Greeness Tracking\\Data\\Hydro_data\\study_catchments_oct6.csv", colClasses = c("STAID"="character"))
+
+#annual discharge volume for all gages (calculated in 'urban greenness_gagesII_selection.Rmd')
+all_gage_annual_runoff_ld<- read.csv( "G:\\Shared drives\\2NDNATURE\\Science\\Research Projects\\TNC Urban Greeness Tracking\\Analysis\\Annual_runoff_watyr.csv", colClasses=c("STAID"="character"))
+
+#daily mean discharge for all gages
+all_gage_bind_ld <- read.csv( "G:\\Shared drives\\2NDNATURE\\Science\\Research Projects\\TNC Urban Greeness Tracking\\Analysis\\daily_runoff.csv", colClasses=c("STAID"="character", "site_no"="character")) %>%mutate(Date=as.Date(Date))
+```
+
+
+```{r eval=FALSE, include=FALSE}
+#daily max data for where we have it
+all_gage_max_bind_ld<-read.csv("G:\\Shared drives\\2NDNATURE\\Science\\Research Projects\\TNC Urban Greeness Tracking\\Analysis\\daily_max_runoff.csv", colClasses=("site_no"="character")) %>%mutate(Date=as.Date(Date))
+
+#join daily means to daily maxs
+all_gage_meanmax<- left_join(all_gage_bind_ld, all_gage_max_bind_ld, by = c("Date" = "Date", "site_no" = "site_no" ))
+
+```
+
+# all_gage_annual_runoff_ld will serve as master dataset summarised to year
+#Set rule for inclusion of year as complete year for annual discharge metric
+complete > 90% of days have flow data. = 328.5 days
+
+```{r}
+#complete>328 days
+all_gage_annual_runoff_ld <- all_gage_annual_runoff_ld %>% mutate(complete =ifelse(n>328, 1, 0))
+```
+
+
+#Calulate high flow metrics
+```{r}
+#calc monthly medians from the mean daily. Used to determine high flow treshhold
+all_gage_bind_ld<-renameNWISColumns(all_gage_bind_ld)
+
+all_gage_bind_ld<- all_gage_bind_ld %>% mutate(month = substr(Date, 6,7),
+                                               day=substr(Date, 9,10),
+                                               Date=as.character(Date),
+                                               Date=as.POSIXct(Date,format="%Y-%m-%d"))
+
+mnth_med_allyrs <- all_gage_bind_ld %>% group_by(site_no, month) %>% summarise(mnth_med_allyrs= median(Flow))
+
+mnth_med_curyr <- all_gage_bind_ld %>% group_by(site_no, month, year) %>% summarise(mnth_med_curyr= median(Flow))
+
+all_gage_bind_ld <- all_gage_bind_ld %>% left_join(mnth_med_allyrs, by = c("month" = "month", "site_no" = "site_no" )) %>% left_join (mnth_med_curyr, by = c("month" = "month", "site_no" = "site_no", "year" = "year")) 
+
+#head(all_gage_meanmax)
+
+```
+
+```{r}
+#calculate high flow metric. (And annual CV)
+#All of these calculations use daily mean flow. we only have daily max flow for 122 sites and limited years for those sites
+
+#define peaks. threshold = 3x monthly median flow. calculated using local and global threshold
+all_gage_bind_ld <- all_gage_bind_ld %>% 
+  mutate(Peak_global =ifelse(Flow>(3*mnth_med_allyrs), 1, 0),
+         Peak_local =ifelse(Flow>(3*mnth_med_curyr), 1, 0))
+
+#annual peak stats - global threshold
+annual_hi_glob <- all_gage_bind_ld %>% filter(Peak_global==1) %>% group_by(STAID, wat_yr) %>% summarise(Hi_flow_days_glob = sum(Peak_global), Hi_flow_avg_glob=mean(Flow))
+
+length(unique(annual_hi_glob$STAID))
+
+#annual peak stats - local threshold
+annual_hi_loc <- all_gage_bind_ld %>% filter(Peak_local==1) %>% group_by(STAID, wat_yr) %>% summarise(Hi_flow_days_loc = sum(Peak_local), Hi_flow_avg_loc =mean(Flow))
+
+length(unique(annual_hi_glob$STAID))
+
+#annual CV
+annual_cv <- all_gage_bind_ld %>% group_by(STAID, wat_yr) %>% summarise(CV=(sd(Flow, na.rm=TRUE)/ mean(Flow, na.rm=TRUE)*100))
+
+
+
+#join high flow metrics together
+all_gage_annual_hi_flow<- left_join(annual_hi_glob, annual_hi_loc, by = c("STAID" = "STAID", "wat_yr" = "wat_yr")) %>% left_join(annual_cv, by = c("STAID" = "STAID", "wat_yr" = "wat_yr"))
+
+
+```
+
+#trying different hydro packages
+```{r eval=FALSE, include=FALSE}
+#tried to use flowsceen package but it would not accpt my data as time series
+
+save(all_gage_bind_ld, file= "flows.Rdata")
+flowscreen <- read.flows("flows.Rdata")
+flow_ts <- create.ts(flowscreen,  hyrstart = 10)
+```
+
+```{r}
+# formating data for hydrostats package
+
+reformat<-all_gage_bind_ld%>% mutate(Date=as.character(Date))
+flow_ts<-ts.format(reformat, format="%Y-%m-%d", cols=c(4,5))
+col_order <- c("Date", "Q", "site_no", 'wat_yr')
+flow_ts<-flow_ts[, col_order] #changing column order
+flow_ts$Q <- replace(flow_ts$Q, which(flow_ts$Q < 0), NA) #replacing negative flows with NA
+```
+
+#calculate baseflows 
+
+```{r}
+##using hydrostats
+
+#split data into list of data frames for each gage. REMOVE gage with all NAs #419 in list and gage number 04084445
+flow_list <- split(flow_ts, f = flow_ts$site_no)
+flow_list <- flow_list[-419]
+
+#apply baseflow funtion to one item in list
+baseflow_test <- baseflows(flow_list[[1]], ts ="daily") #this works for one gage
+
+#apply baseflow funtion to all gage sites
+baseflow<-lapply(flow_list, baseflows, ts='daily') #this works!
+
+#getting gage number assigned back to data and collapse to single data frame. Also adding in peak flow thresholds here based on bf
+baseflow_df<-dplyr::bind_rows(baseflow, .id = "site_no") %>% 
+  mutate(wat_yr = water_year(Date, origin=10),
+         bf_x3 = bf*3,
+         bf_x2 = bf*2,
+         bf_x1_5=bf*1.5,
+         Date=as.character(Date),
+         Date=as.POSIXct(Date,format="%Y-%m-%d"))
+
+all_gage_annual_baseflow <- baseflow_df %>% group_by(site_no, wat_yr) %>% summarise(annual_avg_bf =mean(bf, na.rm = TRUE))
+
+```
+
+```{r eval=FALSE, include=FALSE}
+# Baseflows works using lfstat pkg too. but we will stick with hydrostats
+
+#calc vector of bfs
+baseflow_test_values <- baseflow(flow_ts$Q)
+
+#Bind vector back to data
+baseflow_ts <- cbind(flow_ts,baseflow_test_values)
+
+#calculate mean bf per year
+all_gage_annual_baseflow <- baseflow_ts %>% group_by(site_no, wat_yr) %>% summarise(annual_avg_baseflow =mean(baseflow_test_values, na.rm = TRUE))
+
+```
+
+
+#calculate peaks flows
+ Could not find a way to identify peaks that does not require a threshold. We use high flow spells funtion from hydro stats to define peak flows.Here I create some new thresholds and plot them to see which looks best. 15 day moving median looks best (med_15).
+
+```{r}
+#create Moving window median thresholds
+
+flow_ts <- flow_ts %>% group_by(site_no)%>% mutate(
+  med_30=rollapply(Q,30, median, fill=Q),
+  med_15=rollapply(Q,15, median, fill=Q)) %>% ungroup()
+```
+
+
+```{r}
+ts_plots<-left_join(baseflow_df, all_gage_bind_ld, by = c("Date" = "Date", "site_no" = "site_no" )) %>%  left_join(flow_ts, by = c("Date" = "Date", "site_no" = "site_no" ))%>%
+  mutate(global_3x_mth_med=3*mnth_med_allyrs,
+         local_3x_mnth_med=3*mnth_med_curyr)
+```
+
+
+```{r, fig.height = 10, fig.asp = .62}
+#some hydrograph plots with thresholds
+
+ts_plots %>% filter(site_no =='01096500', wat_yr.x==2015) %>% pivot_longer(cols =c(Q, bf, global_3x_mth_med, local_3x_mnth_med, bf_x2,  med_30, med_15), names_to='metric')%>%
+  ggplot(aes(Date, value, group=metric, colour=metric)) +
+    geom_line() +
+      ggtitle("hydrograph for gage 01096500")+
+  xlab('')+
+  ylab("daily mean flow (cfs)")+
+  theme(axis.text.x = element_text(angle = 90, hjust=0))+
+  scale_x_datetime(breaks = date_breaks(width = "10 days"), labels = date_format("%b-%d"))
+
+  
+ts_plots %>% filter(site_no =='01094400', wat_yr.x==c(1995,2005)) %>% pivot_longer(cols =c(Q, global_3x_mth_med, local_3x_mnth_med, med_15), names_to='metric')%>%
+  ggplot(aes(Date, value, group=metric, colour=metric)) +
+    geom_line() +
+  facet_wrap(~ wat_yr.x, scales="free_x", nrow=2)+
+  xlab('')+
+  ylab("daily mean flow (cfs)")+
+  scale_x_datetime(breaks = date_breaks(width = "10 days"), labels = date_format("%b-%d"))+
+  theme_bw()+
+    theme(axis.text.x = element_text(angle = 90, hjust=0))
+
+
+```
+
+```{r}
+#calculate high spells
+
+test_01094400 <- flow_ts %>% filter(site_no =='01094400')
+
+reformat<-test_01094400%>% mutate(Date=as.character(Date))
+test_ts<-ts.format(reformat, format="%Y-%m-%d", cols=c(1,2))
+
+
+high_spells <- high.spells(test_ts, quant = NULL, threshold = test_ts$med_15, ind.days = 5,  duration = TRUE, volume = TRUE, plot = TRUE, ignore.zeros = FALSE,
+ctf.threshold = 0.1, ann.stats = TRUE, ann.stats.only = FALSE, inter.flood = FALSE,
+hydro.year=FALSE)
+
+
+```
+
