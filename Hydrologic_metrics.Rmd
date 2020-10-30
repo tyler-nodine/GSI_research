@@ -194,20 +194,20 @@ ts_plots<-left_join(baseflow_df, all_gage_bind_ld, by = c("Date" = "Date", "site
 ```
 
 
-```{r, fig.height = 10, fig.asp = .62}
+```{r}
 #some hydrograph plots with thresholds
 
-ts_plots %>% filter(site_no =='01096500', wat_yr.x==2015) %>% pivot_longer(cols =c(Q, bf, global_3x_mth_med, local_3x_mnth_med, bf_x2,  med_30, med_15), names_to='metric')%>%
+ts_plots %>% filter(site_no =='01096500', wat_yr.x==2015) %>% pivot_longer(cols =c(Q.x, bf, global_3x_mth_med, local_3x_mnth_med, med_15), names_to='metric')%>%
   ggplot(aes(Date, value, group=metric, colour=metric)) +
     geom_line() +
-      ggtitle("hydrograph for gage 01096500")+
+      ggtitle("hydrograph for gage 01096500 in 2015")+
   xlab('')+
   ylab("daily mean flow (cfs)")+
   theme(axis.text.x = element_text(angle = 90, hjust=0))+
   scale_x_datetime(breaks = date_breaks(width = "10 days"), labels = date_format("%b-%d"))
 
   
-ts_plots %>% filter(site_no =='01094400', wat_yr.x==c(1995,2005)) %>% pivot_longer(cols =c(Q, global_3x_mth_med, local_3x_mnth_med, med_15), names_to='metric')%>%
+ts_plots %>% filter(site_no =='01094400', wat_yr.x==c(1995,2005)) %>% pivot_longer(cols =c(Q.x, global_3x_mth_med, local_3x_mnth_med, med_15, bf), names_to='metric')%>%
   ggplot(aes(Date, value, group=metric, colour=metric)) +
     geom_line() +
   facet_wrap(~ wat_yr.x, scales="free_x", nrow=2)+
